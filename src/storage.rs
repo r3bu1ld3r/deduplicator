@@ -13,6 +13,7 @@ impl Storage {
     pub async fn new() -> Result<Self> {
         let file_handle = File::create("./numbers.log").await?;
         let cache = HashSet::<u32>::new();
+        println!("[+] storage created");
         Ok(Self { file_handle, cache })
     }
 
@@ -26,7 +27,7 @@ impl Storage {
             Ok(())
         }
     }
-    
+
     fn is_dup(&mut self, number: u32) -> bool {
         !self.cache.insert(number)
     }

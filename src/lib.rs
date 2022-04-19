@@ -1,2 +1,2 @@
-mod storage;
 pub mod server;
+mod storage;

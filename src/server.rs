@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::storage::Storage;
 use anyhow::Result;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, Mutex},
+    sync::{Mutex, Semaphore},
 };
-use crate::storage::Storage;
 #[derive(Debug, PartialEq)]
 pub(crate) enum InputString {
     Data(u32),
@@ -18,11 +18,13 @@ pub async fn run() -> Result<()> {
     let clients_limit = Arc::new(Semaphore::new(5));
     let storage = Arc::new(Mutex::new(Storage::new().await?));
 
+    println!("[+] server started");
     loop {
         let (socket, _) = listener.accept().await?;
         let limit_cln = Arc::clone(&clients_limit);
         let storage_cln = Arc::clone(&storage);
 
+        println!("[+] client connected");
         tokio::spawn(async move {
             if let Ok(_guard) = limit_cln.try_acquire() {
                 request_handler(socket, storage_cln).await.unwrap();
@@ -39,7 +41,7 @@ pub(crate) async fn request_handler(socket: TcpStream, storage: Arc<Mutex<Storag
         InputString::Data(d) => {
             let mut store = storage.lock().await;
             Ok(store.append(d).await?)
-        },
+        }
         InputString::Termination => unimplemented!("without graceful shutdown"),
         InputString::Garbage => Ok(()),
     }
@@ -51,7 +53,7 @@ pub(crate) async fn parse_input(input: [u8; 10]) -> Result<InputString> {
     } else {
         match std::str::from_utf8(&input[0..9]) {
             Ok(s) if s.eq("terminate") => Ok(InputString::Termination),
-            Ok(s) if s.chars().nth(0).eq(&Some('0')) => {
+            Ok(s) if s.chars().next().eq(&Some('0')) => {
                 Ok(InputString::Data(u32::from_str_radix(s, 10)?))
             }
             Ok(_) => Ok(InputString::Garbage),
