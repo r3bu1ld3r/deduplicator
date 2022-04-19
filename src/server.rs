@@ -13,7 +13,7 @@ pub(crate) enum InputString {
     Garbage,
 }
 
-pub async fn run_server() -> Result<()> {
+pub async fn run() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000").await?;
     let clients_limit = Arc::new(Semaphore::new(5));
     let storage = Arc::new(Mutex::new(Storage::new().await?));
@@ -62,7 +62,6 @@ pub(crate) async fn parse_input(input: [u8; 10]) -> Result<InputString> {
 
 #[cfg(test)]
 mod test {
-    use std::num::ParseIntError;
     use super::*;
 
     #[tokio::test]

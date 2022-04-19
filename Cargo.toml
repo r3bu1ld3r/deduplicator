@@ -3,14 +3,15 @@ name = "nuclia"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "app"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "nuclia"
+path = "src/main.rs"
+
 [lib]
-crate-type = ["cdylib"]
+name = "nuclia"
+path = "src/lib.rs"
 bench = false
-name = "nuclia_lib"
 
 [dependencies]
 anyhow = "1.0.56"
