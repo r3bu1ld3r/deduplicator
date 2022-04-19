@@ -4,9 +4,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::Semaphore,
+    sync::{Semaphore, Mutex},
 };
-
+use storage::Storage;
 #[derive(Debug, PartialEq)]
 pub enum InputString {
     Data(u32),
@@ -18,25 +18,30 @@ pub enum InputString {
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000").await?;
     let clients_limit = Arc::new(Semaphore::new(5));
+    let storage = Arc::new(Mutex::new(Storage::new().await?));
 
     loop {
         let (socket, _) = listener.accept().await?;
         let limit_cln = Arc::clone(&clients_limit);
+        let storage_cln = Arc::clone(&storage);
 
         tokio::spawn(async move {
             if let Ok(_guard) = limit_cln.try_acquire() {
-                request_handler(socket).await.unwrap();
+                request_handler(socket, storage_cln).await.unwrap();
             };
         });
     }
 }
 
-pub async fn request_handler(socket: TcpStream) -> Result<()> {
+pub async fn request_handler(socket: TcpStream, storage: Arc<Mutex<Storage>>) -> Result<()> {
     let mut buf = [0; 10];
     socket.readable().await?;
     socket.try_read(&mut buf)?;
     match parse_input(buf).await? {
-        InputString::Data(d) => todo!(),
+        InputString::Data(d) => {
+            let mut store = storage.lock().await;
+            Ok(store.append(d).await?)
+        },
         InputString::Termination => unimplemented!("without graceful shutdown"),
         InputString::Garbage => Ok(()),
     }
@@ -57,11 +62,10 @@ pub async fn parse_input(input: [u8; 10]) -> Result<InputString> {
     }
 }
 
-#[cfg(test)]
 mod test {
     use std::num::ParseIntError;
-
     use super::*;
+
     #[tokio::test]
     async fn terminate_cmd_test() {
         let input: [u8; 10] = "terminate\n"

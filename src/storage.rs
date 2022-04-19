@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashSet;
 
-use tokio::fs::File;
+use tokio::{fs::File, io::AsyncWriteExt};
 
 #[derive(Debug)]
 pub struct Storage {
@@ -16,7 +16,18 @@ impl Storage {
         Ok(Self { file_handle, cache })
     }
 
-    pub async fn append(number: u32) -> Result<()> {
-        Ok(())
+    pub async fn append(&mut self, number: u32) -> Result<()> {
+        if !self.is_dup(number) {
+            let line = format!("{}\n", &number.to_string());
+            let mut buf = line.as_bytes();
+            self.file_handle.write_buf(&mut buf).await?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+    
+    fn is_dup(&mut self, number: u32) -> bool {
+        !self.cache.insert(number)
     }
 }
