@@ -6,8 +6,9 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Mutex, Semaphore},
 };
+
 #[derive(Debug, PartialEq)]
-pub(crate) enum InputString {
+pub enum InputString {
     Data(u32),
     Termination,
     Garbage,
@@ -18,13 +19,11 @@ pub async fn run() -> Result<()> {
     let clients_limit = Arc::new(Semaphore::new(5));
     let storage = Arc::new(Mutex::new(Storage::new().await?));
 
-    println!("[+] server started");
     loop {
         let (socket, _) = listener.accept().await?;
         let limit_cln = Arc::clone(&clients_limit);
         let storage_cln = Arc::clone(&storage);
 
-        println!("[+] client connected");
         tokio::spawn(async move {
             if let Ok(_guard) = limit_cln.try_acquire() {
                 request_handler(socket, storage_cln).await.unwrap();
