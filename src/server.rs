@@ -1,15 +1,19 @@
 use std::sync::Arc;
 
 use crate::storage::Storage;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tokio::{
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
-    sync::{Mutex, Semaphore},
+    sync::{
+        broadcast::{self, Receiver, Sender},
+        Mutex, Semaphore,
+    },
 };
 
 #[derive(Debug, PartialEq)]
 pub enum InputString {
-    Data(u32),
+    ValidNumber(u32),
     Termination,
     Garbage,
 }
@@ -18,31 +22,71 @@ pub async fn run() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4000").await?;
     let clients_limit = Arc::new(Semaphore::new(5));
     let storage = Arc::new(Mutex::new(Storage::new().await?));
+    let (tx, _) = broadcast::channel::<bool>(5);
 
     loop {
         let (socket, _) = listener.accept().await?;
         let limit_cln = Arc::clone(&clients_limit);
         let storage_cln = Arc::clone(&storage);
+        let sender = tx.clone();
+        let subscriber = tx.subscribe();
 
         tokio::spawn(async move {
             if let Ok(_guard) = limit_cln.try_acquire() {
-                request_handler(socket, storage_cln).await.unwrap();
+                if let Err(e) = client_handler(socket, storage_cln, sender, subscriber).await {
+                    println!("[-] Error: {e}")
+                }
             };
         });
     }
 }
 
-pub(crate) async fn request_handler(socket: TcpStream, storage: Arc<Mutex<Storage>>) -> Result<()> {
-    let mut buf = [0; 10];
-    socket.readable().await?;
-    socket.try_read(&mut buf)?;
-    match parse_input(buf).await? {
-        InputString::Data(d) => {
-            let mut store = storage.lock().await;
-            Ok(store.append(d).await?)
+pub(crate) async fn client_handler(
+    mut stream: TcpStream,
+    storage: Arc<Mutex<Storage>>,
+    sender: Sender<bool>,
+    mut subscriber: Receiver<bool>,
+) -> Result<()> {
+    let mut watcher = true;
+    while watcher {
+        watcher = tokio::select! {
+            res = read_number(&mut stream, &storage, &sender) => res?,
+            _ = subscriber.recv() => false,
         }
-        InputString::Termination => unimplemented!("without graceful shutdown"),
-        InputString::Garbage => Ok(()),
+    }
+    Ok(())
+}
+
+pub(crate) async fn read_number(
+    stream: &mut TcpStream,
+    storage: &Arc<Mutex<Storage>>,
+    sender: &Sender<bool>,
+) -> Result<bool> {
+    let mut input_buf = [0; 10];
+    loop{
+        stream.readable().await?;
+        match stream.try_read(&mut input_buf){
+            Ok(n) if n == 0 => return Ok(false), //stream closed by client
+            Ok(_) => break,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(anyhow!("{e}"))
+        }
+    }
+
+    return match parse_input(input_buf).await? {
+        InputString::ValidNumber(n) => {
+            let mut store = storage.lock().await;
+            store.append(n).await?;
+            Ok(true)
+        }
+        InputString::Termination => {
+            println!("[+] Termination msg received by: {}", sender.send(true)?);
+            Ok(false)
+        }
+        InputString::Garbage => {
+            stream.shutdown().await?;
+            Ok(false)
+        }
     }
 }
 
@@ -53,7 +97,7 @@ pub(crate) async fn parse_input(input: [u8; 10]) -> Result<InputString> {
         match std::str::from_utf8(&input[0..9]) {
             Ok(s) if s.eq("terminate") => Ok(InputString::Termination),
             Ok(s) if s.chars().next().eq(&Some('0')) => {
-                Ok(InputString::Data(u32::from_str_radix(s, 10)?))
+                Ok(InputString::ValidNumber(u32::from_str_radix(s, 10)?))
             }
             Ok(_) => Ok(InputString::Garbage),
             Err(_) => Ok(InputString::Garbage),
@@ -82,7 +126,7 @@ mod test {
             .expect("incorrect length");
         assert_eq!(
             parse_input(input).await.unwrap(),
-            InputString::Data(2345678)
+            InputString::ValidNumber(2345678)
         );
     }
 

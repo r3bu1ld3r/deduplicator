@@ -1,14 +1,14 @@
 extern crate dedup;
 use dedup::server::{run, InputString};
-use tokio::time::sleep;
+use rand::{distributions::Alphanumeric, Rng};
+use tokio::net::TcpSocket;
 use std::io::Read;
-use rand::{distributions::Alphanumeric, Rng}; 
 use tokio::io::AsyncWriteExt;
+use tokio::time::sleep;
 use tokio::{net::TcpStream, runtime::Runtime};
 
-
 struct DedupClient {
-    stream: TcpStream
+    stream: TcpStream,
 }
 
 fn generate_trash() -> String {
@@ -23,14 +23,12 @@ impl DedupClient {
     pub async fn new() -> Self {
         let stream = TcpStream::connect("127.0.0.1:4000").await.unwrap();
         stream.writable().await.unwrap();
-        Self {
-            stream
-        }
+        Self { stream }
     }
 
     pub async fn send(&mut self, req_type: InputString) {
         let buf = match req_type {
-            InputString::Data(number) => format!("{:0>9}\n", number.to_string()),
+            InputString::ValidNumber(number) => format!("{:0>9}\n", number.to_string()),
             InputString::Termination => format!("terminate\n"),
             InputString::Garbage => generate_trash(),
         };
@@ -46,42 +44,38 @@ async fn setup_srv() {
     tokio::spawn(async {
         run().await.unwrap();
     });
-    sleep(std::time::Duration::from_secs(1)).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simple_valid_input_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
-    for n in 1000..10000 {
-        client.send(InputString::Data(n)).await;
-        if n % 13 == 0 {
-            client.send(InputString::Data(n)).await
-        }
+    for n in 1..=1000000 {
+        client.send(InputString::ValidNumber(n)).await;
     }
     //TODO add assert number of uniques
 }
 
 #[tokio::test]
-async fn termination_test () {
+async fn termination_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
-    client.send(InputString::Data(18)).await;
-    client.send(InputString::Data(8)).await;
+    client.send(InputString::ValidNumber(18)).await;
+    client.send(InputString::ValidNumber(8)).await;
     client.send(InputString::Termination).await;
-    client.send(InputString::Data(28)).await; //TODO assert error here
+    client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
 
 #[tokio::test]
 async fn garbage_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
-    client.send(InputString::Data(18)).await;
-    client.send(InputString::Data(8)).await;
+    client.send(InputString::ValidNumber(18)).await;
+    client.send(InputString::ValidNumber(8)).await;
     client.send(InputString::Garbage).await;
-    client.send(InputString::Data(28)).await; //TODO assert error here
+    client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
 
-#[tokio::test]
-async fn clients_limit_test() {
-}
+//#[tokio::test]
+//async fn clients_limit_test() {
+//}
