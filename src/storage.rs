@@ -42,8 +42,9 @@ impl Stats{
 }
 
 impl Storage {
-    pub async fn new() -> Result<Self> {
-        let file_handle = File::create("./numbers.log").await?;
+    pub fn new() -> Result<Self> {
+        let std_file = std::fs::File::create("./numbers.log")?;
+        let file_handle = File::from_std(std_file);
         let uniques = HashSet::<u32>::new();
         let last_stats = Stats::new();
         Ok(Self { file_handle, uniques, cache: Vec::with_capacity(CACHE_SIZE), last_stats })

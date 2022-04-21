@@ -11,28 +11,125 @@ use tokio::{
     }, runtime::{Runtime, Builder},
 };
 
-//pub struct DeDupServer {
-//    listener: TcpListener,
-//    conn_limit: Arc<Semaphore>,
-//    storage: Arc<Mutex<Storage>>,
-//    termination_notify: broadcast::Sender<()>,
-//    shutdown_complete_rx: mpsc::Receiver<()>,
-//    shutdown_complete_tx: mpsc::Sender<()>,
-//}
-//
-//const MAX_CONNECTIONS: usize = 5;
-//
-//impl DeDupServer{
-//    pub fn new() -> Self {
-//        let rt = Builder::new_multi_thread()
-//            .enable_all()
-//            .build()
-//            .unwrap();
-//        
-//        let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-//
-//    }
-//}
+pub struct DeDupServer {
+    listener: TcpListener,
+    conn_limit: Arc<Semaphore>,
+    storage: Arc<Mutex<Storage>>,
+    termination_notify: broadcast::Sender<()>,
+    //shutdown_complete_rx: mpsc::Receiver<()>,
+    //shutdown_complete_tx: mpsc::Sender<()>,
+}
+
+pub(crate) struct ClientHandler{
+    stream: TcpStream,
+    conn_limit: Arc<Semaphore>,
+    storage: Arc<Mutex<Storage>>,
+    terminate_tx: broadcast::Sender<()>,
+    terminate_rx: broadcast::Receiver<()>
+}
+
+impl ClientHandler{
+    pub(crate) fn new(stream: TcpStream, conn_limit: Arc<Semaphore>, storage: Arc<Mutex<Storage>>, terminate_tx: broadcast::Sender<()>, terminate_rx: broadcast::Receiver<()>) -> Self {
+        Self {
+            stream,
+            conn_limit,
+            storage,
+            terminate_tx,
+            terminate_rx
+        }
+    }
+
+    pub(crate) async fn run(&mut self) -> Result<()> {
+        if let Ok(_guard) = self.conn_limit.try_acquire() {
+            let mut watcher = true;
+            while watcher {
+                watcher = tokio::select! {
+                    res = self.recv_numbers() => res?,
+                    _ = self.terminate_rx.recv() => false,
+                }
+            }
+        };
+        Ok(())
+    }
+
+    async fn recv_numbers(&self) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn read_socket(&self) -> Result<[u8; 10]> {
+        let mut input_buf = [0; 10];
+        loop{
+            self.stream.readable().await?;
+            match self.stream.try_read(&mut input_buf){
+                Ok(n) if n == 0 => return Err(anyhow!("stream closed by client")), //stream closed by client
+                Ok(_) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(anyhow!("{e}"))
+            }
+        }
+        Ok(input_buf)
+    }
+}
+
+pub(crate) struct StatsCollector{
+    storage_handler: Arc<Mutex<Storage>>
+}
+
+impl StatsCollector {
+    pub(crate) fn new(storage: Arc<Mutex<Storage>>) -> Self {
+        Self {
+            storage_handler: storage
+        } 
+    }
+
+    pub(crate) async fn run(&mut self) {
+        let handler_clone = Arc::clone(&self.storage_handler);
+        tokio::spawn(async move{
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop{
+                interval.tick().await;
+                let storage = handler_clone.lock().await;
+                storage.print_stats().await;
+            }
+        });       
+    }
+}
+
+const MAX_CONNECTIONS: usize = 5;
+
+impl DeDupServer{
+    pub fn new(listener: TcpListener) -> Result<Self> {
+        let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let storage = Arc::new(Mutex::new(Storage::new()?));
+        let (termination_notify, _) = broadcast::channel::<()>(1);
+
+        Ok(Self{
+            listener,
+            conn_limit,
+            storage,
+            termination_notify,
+        })
+    }
+
+    pub async fn run(&self) -> Result<()> {
+        let mut stats_collector = StatsCollector::new(Arc::clone(&self.storage));
+        stats_collector.run().await;
+        loop{
+            let (stream, _) = self.listener.accept().await?;
+            let handler = ClientHandler::new(
+                stream,
+                Arc::clone(&self.conn_limit),
+                Arc::clone(&self.storage),
+                self.termination_notify.clone(),
+                self.termination_notify.subscribe()
+            );
+
+            tokio::spawn(async move {
+                handler.run().await.unwrap()
+            });
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum InputString {
@@ -41,59 +138,10 @@ pub enum InputString {
     Garbage,
 }
 
-pub async fn run() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:4000").await?;
-    let clients_limit = Arc::new(Semaphore::new(5));
-    let storage = Arc::new(Mutex::new(Storage::new().await?));
-    let (tx, _) = broadcast::channel::<bool>(5);
-
-    let storage_cln = Arc::clone(&storage);
-    tokio::spawn(async move{
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        loop{
-            interval.tick().await;
-            let store = storage_cln.lock().await;
-            store.print_stats().await;
-        }
-    });
-
-    loop {
-        let (socket, _) = listener.accept().await?;
-        let limit_cln = Arc::clone(&clients_limit);
-        let storage_cln = Arc::clone(&storage);
-        let sender = tx.clone();
-        let subscriber = tx.subscribe();
-
-        tokio::spawn(async move {
-            if let Ok(_guard) = limit_cln.try_acquire() {
-                if let Err(e) = client_handler(socket, storage_cln, sender, subscriber).await {
-                    println!("[-] Error: {e}")
-                }
-            };
-        });
-    }
-}
-
-pub(crate) async fn client_handler(
-    mut stream: TcpStream,
-    storage: Arc<Mutex<Storage>>,
-    sender: Sender<bool>,
-    mut subscriber: Receiver<bool>,
-) -> Result<()> {
-    let mut watcher = true;
-    while watcher {
-        watcher = tokio::select! {
-            res = read_number(&mut stream, &storage, &sender) => res?,
-            _ = subscriber.recv() => false,
-        }
-    }
-    Ok(())
-}
-
 pub(crate) async fn read_number(
     stream: &mut TcpStream,
     storage: &Arc<Mutex<Storage>>,
-    sender: &Sender<bool>,
+    sender: &Sender<()>,
 ) -> Result<bool> {
     let mut input_buf = [0; 10];
     loop{
