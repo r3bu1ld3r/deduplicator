@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::storage::Storage;
 use anyhow::{anyhow, Result};
@@ -7,9 +7,32 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{
         broadcast::{self, Receiver, Sender},
-        Mutex, Semaphore,
-    },
+        Mutex, Semaphore, mpsc,
+    }, runtime::{Runtime, Builder},
 };
+
+//pub struct DeDupServer {
+//    listener: TcpListener,
+//    conn_limit: Arc<Semaphore>,
+//    storage: Arc<Mutex<Storage>>,
+//    termination_notify: broadcast::Sender<()>,
+//    shutdown_complete_rx: mpsc::Receiver<()>,
+//    shutdown_complete_tx: mpsc::Sender<()>,
+//}
+//
+//const MAX_CONNECTIONS: usize = 5;
+//
+//impl DeDupServer{
+//    pub fn new() -> Self {
+//        let rt = Builder::new_multi_thread()
+//            .enable_all()
+//            .build()
+//            .unwrap();
+//        
+//        let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+//
+//    }
+//}
 
 #[derive(Debug, PartialEq)]
 pub enum InputString {
@@ -23,6 +46,16 @@ pub async fn run() -> Result<()> {
     let clients_limit = Arc::new(Semaphore::new(5));
     let storage = Arc::new(Mutex::new(Storage::new().await?));
     let (tx, _) = broadcast::channel::<bool>(5);
+
+    let storage_cln = Arc::clone(&storage);
+    tokio::spawn(async move{
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop{
+            interval.tick().await;
+            let store = storage_cln.lock().await;
+            store.print_stats().await;
+        }
+    });
 
     loop {
         let (socket, _) = listener.accept().await?;
