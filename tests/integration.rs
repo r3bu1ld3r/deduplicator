@@ -4,7 +4,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use tokio::net::TcpSocket;
 use std::io::Read;
 use tokio::io::AsyncWriteExt;
-use tokio::time::sleep;
+use tokio::time::{sleep, Duration};
 use tokio::{net::TcpStream, runtime::Runtime};
 
 struct DedupClient {
@@ -44,29 +44,31 @@ async fn setup_srv() {
     tokio::spawn(async {
         run().await.unwrap();
     });
+    sleep(Duration::from_millis(300)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simple_valid_input_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
-    for n in 1..=1000000 {
+    for n in 1..=10000000 {
         client.send(InputString::ValidNumber(n)).await;
     }
     //TODO add assert number of uniques
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn termination_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
     client.send(InputString::ValidNumber(18)).await;
     client.send(InputString::ValidNumber(8)).await;
+    sleep(Duration::from_millis(300)).await;
     client.send(InputString::Termination).await;
     client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn garbage_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
