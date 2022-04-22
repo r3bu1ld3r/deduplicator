@@ -1,7 +1,7 @@
 extern crate dedup;
-use dedup::server::{run, InputString};
+use dedup::server::{DeDupServer, InputString};
 use rand::{distributions::Alphanumeric, Rng};
-use tokio::net::TcpSocket;
+use tokio::net::TcpListener;
 use std::io::Read;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, Duration};
@@ -35,14 +35,16 @@ impl DedupClient {
         self.stream.write_all(buf.as_bytes()).await.unwrap();
     }
 
-    pub async fn shutdown(&mut self) {
+    pub async fn _shutdown(&mut self) {
         self.stream.shutdown().await.unwrap();
     }
 }
 
 async fn setup_srv() {
     tokio::spawn(async {
-        run().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:4000").await.unwrap();
+        let server = DeDupServer::new(listener).unwrap();
+        server.run().await.unwrap();
     });
     sleep(Duration::from_millis(300)).await;
 }
@@ -54,6 +56,7 @@ async fn simple_valid_input_test() {
     for n in 1..=10000000 {
         client.send(InputString::ValidNumber(n)).await;
     }
+    client.send(InputString::Termination).await;
     //TODO add assert number of uniques
 }
 
