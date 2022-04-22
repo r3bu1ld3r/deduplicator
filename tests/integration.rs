@@ -56,7 +56,7 @@ async fn simple_valid_input_test() {
         client.send(InputString::ValidNumber(n)).await;
     }
     client.send(InputString::Termination).await;
-    //TODO add assert number of uniques
+    sleep(Duration::from_secs(1)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

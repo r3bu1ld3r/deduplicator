@@ -58,7 +58,7 @@ impl Storage {
 
     pub async fn append(&mut self, number: u32) -> Result<()> {
         if !self.check_dup(number) {
-            let line = format!("{}\n", &number.to_string());
+            let line = format!("{:0>9}\n", &number.to_string());
             let buf = line.as_bytes();
             self.cache.append(&mut buf.to_vec());
             if self.cache.len() >= CACHE_SIZE {
