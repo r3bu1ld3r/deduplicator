@@ -56,25 +56,27 @@ impl Storage {
             let buf = line.as_bytes();
             self.cache.append(&mut buf.to_vec());
             if self.cache.len() >= CACHE_SIZE {
-               self.cache_flush().await
+               self.cache_flush(self.cache.len()).await
             }
         };
         Ok(())
     }
 
-    async fn cache_flush(&mut self) {
+    async fn cache_flush(&mut self, actual_size: usize) {
         let mut flushed = false;
         let mut written: usize = 0;
-        let target_size = self.cache.len();
         let mut buf = self.cache.as_slice();
         while !flushed {
             match self.file_handle.write_buf(&mut buf).await {
                 Ok(n) if n == 0 => panic!("file is unavailable (may be deleted)"),
-                Ok(n) if n > 0 && written + n < target_size => {
+                Ok(n) if n > 0 && written + n < actual_size => {
                     written += n;
                     continue //previous write wasn't full, just call it again 
                 },
-                Ok(_) => flushed = true,
+                Ok(_) => {
+                    self.file_handle.flush();
+                    flushed = true
+                }
                 Err(e) => println!("[-] AsyncIO write error: {e}"),
             }
         }
@@ -95,5 +97,9 @@ impl Storage {
         let (new_uniques, dups) = self.last_stats.print();
         let all_uniques = self.uniques.len();
         println!("Received {new_uniques} unique numbers, {dups} duplicates. Unique total: {all_uniques}");
+    }
+
+    pub async fn shutdown(&mut self) {
+        self.cache_flush(self.cache.len()).await;
     }
 }

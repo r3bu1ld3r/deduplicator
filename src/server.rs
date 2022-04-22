@@ -37,21 +37,31 @@ impl DeDupServer{
     pub async fn run(&self) -> Result<()> {
         let mut stats_collector = StatsCollector::new(Arc::clone(&self.storage));
         stats_collector.run().await;
+        let mut shutdown = self.termination_notify.subscribe();
         loop{
-            let (stream, _) = self.listener.accept().await?;
-            let mut subs = self.termination_notify.subscribe();
-            let handler = ClientHandler::new(
-                stream,
-                Arc::clone(&self.conn_limit),
-                Arc::clone(&self.storage),
-                self.termination_notify.clone(),
-            );
+            tokio::select! {
+                res = self.listener.accept() => {
+                    let (stream, _) = res?;
+                    let mut subs = self.termination_notify.subscribe();
+                    let handler = ClientHandler::new(
+                        stream,
+                        Arc::clone(&self.conn_limit),
+                        Arc::clone(&self.storage),
+                        self.termination_notify.clone(),
+                    );
 
-            tokio::spawn(async move {
-                if let Err(e) = handler.run(subs.recv()).await {
-                    println!("Error during clients data processing: {e}");
-                };
-            });
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.run(subs.recv()).await {
+                            println!("Error during clients data processing: {e}");
+                        };
+                    });
+                },
+                _ = shutdown.recv() => {
+                    let mut storage = self.storage.lock().await;
+                    storage.shutdown().await;
+                },
+            };
+            
         }
     }
 }
@@ -77,14 +87,13 @@ impl ClientHandler{
         if let Ok(_guard) = self.conn_limit.acquire().await {
             tokio::select! {
                 res = self.recv_numbers() => {
-                    res?
+                    Ok(res?)
                     //TODO: actions for gracefull shutdown received from this client
                 },
                 _ = shutdown => {
-                    unimplemented!("gracefull shutdown")
+                    Ok(())
                 },
-            };
-            Ok(())
+            }
         } else {
             Err(anyhow!("Can't acquire semaphore - too many connections"))
         }
