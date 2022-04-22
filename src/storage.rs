@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::{collections::HashSet, sync::atomic::AtomicUsize, time::Duration};
+use std::{collections::HashSet, sync::atomic::AtomicUsize};
 
 use tokio::{fs::File, io::AsyncWriteExt};
 
@@ -18,7 +18,7 @@ pub(crate) struct Stats {
     dups: AtomicUsize,
 }
 
-impl Stats{
+impl Stats {
     pub(crate) fn new() -> Self {
         Self {
             uniques: AtomicUsize::new(0),
@@ -27,7 +27,8 @@ impl Stats{
     }
 
     pub(crate) fn inc_uniques(&self) {
-        self.uniques.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.uniques
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     pub(crate) fn inc_dups(&self) {
@@ -47,16 +48,21 @@ impl Storage {
         let file_handle = File::from_std(std_file);
         let uniques = HashSet::<u32>::new();
         let last_stats = Stats::new();
-        Ok(Self { file_handle, uniques, cache: Vec::with_capacity(CACHE_SIZE), last_stats })
+        Ok(Self {
+            file_handle,
+            uniques,
+            cache: Vec::with_capacity(CACHE_SIZE),
+            last_stats,
+        })
     }
 
     pub async fn append(&mut self, number: u32) -> Result<()> {
-        if !self.is_dup(number) {
+        if !self.check_dup(number) {
             let line = format!("{}\n", &number.to_string());
             let buf = line.as_bytes();
             self.cache.append(&mut buf.to_vec());
             if self.cache.len() >= CACHE_SIZE {
-               self.cache_flush(self.cache.len()).await
+                self.cache_flush(self.cache.len()).await
             }
         };
         Ok(())
@@ -71,10 +77,12 @@ impl Storage {
                 Ok(n) if n == 0 => panic!("file is unavailable (may be deleted)"),
                 Ok(n) if n > 0 && written + n < actual_size => {
                     written += n;
-                    continue //previous write wasn't full, just call it again 
-                },
+                    continue; //previous write wasn't full, just call it again
+                }
                 Ok(_) => {
-                    self.file_handle.flush();
+                    if let Err(e) = self.file_handle.flush().await {
+                        println!("[-] error during file flus: {e}");
+                    };
                     flushed = true
                 }
                 Err(e) => println!("[-] AsyncIO write error: {e}"),
@@ -83,8 +91,8 @@ impl Storage {
         self.cache.clear();
     }
 
-    fn is_dup(&mut self, number: u32) -> bool {
-        if self.uniques.insert(number){
+    fn check_dup(&mut self, number: u32) -> bool {
+        if self.uniques.insert(number) {
             self.last_stats.inc_uniques();
             false
         } else {
@@ -96,7 +104,9 @@ impl Storage {
     pub async fn print_stats(&self) {
         let (new_uniques, dups) = self.last_stats.print();
         let all_uniques = self.uniques.len();
-        println!("Received {new_uniques} unique numbers, {dups} duplicates. Unique total: {all_uniques}");
+        println!(
+            "Received {new_uniques} unique numbers, {dups} duplicates. Unique total: {all_uniques}"
+        );
     }
 
     pub async fn shutdown(&mut self) {

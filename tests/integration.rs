@@ -1,11 +1,10 @@
 extern crate dedup;
 use dedup::server::{DeDupServer, InputString};
 use rand::{distributions::Alphanumeric, Rng};
-use tokio::net::TcpListener;
-use std::io::Read;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
-use tokio::{net::TcpStream, runtime::Runtime};
+use tokio::net::TcpStream;
 
 struct DedupClient {
     stream: TcpStream,
