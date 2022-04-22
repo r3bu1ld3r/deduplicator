@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, future::Future};
 
 use crate::storage::Storage;
 use anyhow::{anyhow, Result};
@@ -16,8 +16,6 @@ pub struct DeDupServer {
     conn_limit: Arc<Semaphore>,
     storage: Arc<Mutex<Storage>>,
     termination_notify: broadcast::Sender<()>,
-    //shutdown_complete_rx: mpsc::Receiver<()>,
-    //shutdown_complete_tx: mpsc::Sender<()>,
 }
 
 pub(crate) struct ClientHandler{
@@ -25,35 +23,52 @@ pub(crate) struct ClientHandler{
     conn_limit: Arc<Semaphore>,
     storage: Arc<Mutex<Storage>>,
     terminate_tx: broadcast::Sender<()>,
-    terminate_rx: broadcast::Receiver<()>
 }
 
 impl ClientHandler{
-    pub(crate) fn new(stream: TcpStream, conn_limit: Arc<Semaphore>, storage: Arc<Mutex<Storage>>, terminate_tx: broadcast::Sender<()>, terminate_rx: broadcast::Receiver<()>) -> Self {
+    pub(crate) fn new(stream: TcpStream, conn_limit: Arc<Semaphore>, storage: Arc<Mutex<Storage>>, terminate_tx: broadcast::Sender<()>) -> Self {
         Self {
             stream,
             conn_limit,
             storage,
             terminate_tx,
-            terminate_rx
         }
     }
 
-    pub(crate) async fn run(&mut self) -> Result<()> {
-        if let Ok(_guard) = self.conn_limit.try_acquire() {
-            let mut watcher = true;
-            while watcher {
-                watcher = tokio::select! {
-                    res = self.recv_numbers() => res?,
-                    _ = self.terminate_rx.recv() => false,
-                }
-            }
-        };
-        Ok(())
+    pub(crate) async fn run(&self, shutdown: impl Future ) -> Result<()> {
+        if let Ok(_guard) = self.conn_limit.acquire().await {
+            tokio::select! {
+                res = self.recv_numbers() => {
+                    res?
+                    //TODO: actions for gracefull shutdown received from this client
+                },
+                _ = shutdown => {
+                    unimplemented!("gracefull shutdown")
+                },
+            };
+            Ok(())
+        } else {
+            Err(anyhow!("Can't acquire semaphore - too many connections"))
+        }
     }
 
-    async fn recv_numbers(&self) -> Result<bool> {
-        Ok(true)
+    async fn recv_numbers(&self) -> Result<()> {
+        loop{
+            let line = self.read_socket().await?;
+            match self.parse_input(line)? {
+                InputString::ValidNumber(n) => {
+                    let mut storage = self.storage.lock().await;
+                    storage.append(n).await?;
+                }
+                InputString::Termination => {
+                    println!("[+] Termination msg received by: {}", self.terminate_tx.send(())?);
+                    break Ok(())
+                }
+                InputString::Garbage => {
+                    break Err(anyhow!("client send data that does not conform to a valid line"))
+                }
+            }
+        }
     }
 
     async fn read_socket(&self) -> Result<[u8; 10]> {
@@ -62,12 +77,27 @@ impl ClientHandler{
             self.stream.readable().await?;
             match self.stream.try_read(&mut input_buf){
                 Ok(n) if n == 0 => return Err(anyhow!("stream closed by client")), //stream closed by client
-                Ok(_) => break,
+                Ok(_) => break, //TODO: maybe add case when have to read again if read less than bufsize
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(e) => return Err(anyhow!("{e}"))
             }
         }
         Ok(input_buf)
+    }
+
+    fn parse_input(&self, input: [u8; 10]) -> Result<InputString> {
+        if input[9] != 0xA {
+            Ok(InputString::Garbage)
+        } else {
+            match std::str::from_utf8(&input[0..9]) {
+                Ok(s) if s.eq("terminate") => Ok(InputString::Termination),
+                Ok(s) if s.chars().next().eq(&Some('0')) => {
+                    Ok(InputString::ValidNumber(u32::from_str_radix(s, 10)?))
+                }
+                Ok(_) => Ok(InputString::Garbage),
+                Err(_) => Ok(InputString::Garbage),
+            }
+        }
     }
 }
 
@@ -116,16 +146,18 @@ impl DeDupServer{
         stats_collector.run().await;
         loop{
             let (stream, _) = self.listener.accept().await?;
+            let mut subs = self.termination_notify.subscribe();
             let handler = ClientHandler::new(
                 stream,
                 Arc::clone(&self.conn_limit),
                 Arc::clone(&self.storage),
                 self.termination_notify.clone(),
-                self.termination_notify.subscribe()
             );
 
             tokio::spawn(async move {
-                handler.run().await.unwrap()
+                if let Err(e) = handler.run(subs.recv()).await {
+                    println!("Error during clients data processing: {e}");
+                };
             });
         }
     }
@@ -136,54 +168,6 @@ pub enum InputString {
     ValidNumber(u32),
     Termination,
     Garbage,
-}
-
-pub(crate) async fn read_number(
-    stream: &mut TcpStream,
-    storage: &Arc<Mutex<Storage>>,
-    sender: &Sender<()>,
-) -> Result<bool> {
-    let mut input_buf = [0; 10];
-    loop{
-        stream.readable().await?;
-        match stream.try_read(&mut input_buf){
-            Ok(n) if n == 0 => return Ok(false), //stream closed by client
-            Ok(_) => break,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(e) => return Err(anyhow!("{e}"))
-        }
-    }
-
-    return match parse_input(input_buf).await? {
-        InputString::ValidNumber(n) => {
-            let mut store = storage.lock().await;
-            store.append(n).await?;
-            Ok(true)
-        }
-        InputString::Termination => {
-            println!("[+] Termination msg received by: {}", sender.send(true)?);
-            Ok(false)
-        }
-        InputString::Garbage => {
-            stream.shutdown().await?;
-            Ok(false)
-        }
-    }
-}
-
-pub(crate) async fn parse_input(input: [u8; 10]) -> Result<InputString> {
-    if input[9] != 0xA {
-        Ok(InputString::Garbage)
-    } else {
-        match std::str::from_utf8(&input[0..9]) {
-            Ok(s) if s.eq("terminate") => Ok(InputString::Termination),
-            Ok(s) if s.chars().next().eq(&Some('0')) => {
-                Ok(InputString::ValidNumber(u32::from_str_radix(s, 10)?))
-            }
-            Ok(_) => Ok(InputString::Garbage),
-            Err(_) => Ok(InputString::Garbage),
-        }
-    }
 }
 
 #[cfg(test)]
