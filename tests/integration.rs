@@ -80,6 +80,17 @@ async fn garbage_test() {
     client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
 
-//#[tokio::test]
-//async fn clients_limit_test() {
-//}
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn clients_limit_test() {
+    setup_srv().await;
+    for _ in 0..10{
+        let mut client = DedupClient::new().await;
+        tokio::spawn(async move{
+            for n in 1..=10000000 {
+                client.send(InputString::ValidNumber(n)).await;
+            }
+            client.send(InputString::Termination).await;
+        });
+    };
+    sleep(Duration::from_secs(60)).await;
+}

@@ -4,7 +4,7 @@ use crate::storage::Storage;
 use anyhow::{anyhow, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, Mutex, Semaphore},
+    sync::{broadcast, Mutex, Semaphore, SemaphorePermit},
 };
 
 pub struct DeDupServer {
@@ -35,6 +35,7 @@ impl DeDupServer {
         stats_collector.run().await;
         let mut shutdown = self.termination_notify.subscribe();
         loop {
+            self.conn_limit.acquire().await.unwrap().forget();
             tokio::select! {
                 res = self.listener.accept() => {
                     let (stream, _) = res?;
@@ -50,6 +51,7 @@ impl DeDupServer {
                         if let Err(e) = handler.run(subs.recv()).await {
                             println!("Error during clients data processing: {e}");
                         };
+                        
                     });
                 },
                 _ = shutdown.recv() => {
@@ -84,18 +86,14 @@ impl ClientHandler {
     }
 
     pub(crate) async fn run(&self, shutdown: impl Future) -> Result<()> {
-        if let Ok(_guard) = self.conn_limit.acquire().await {
-            tokio::select! {
-                res = self.recv_numbers() => {
-                    Ok(res?)
-                    //TODO: actions for gracefull shutdown received from this client
-                },
-                _ = shutdown => {
-                    Ok(())
-                },
-            }
-        } else {
-            Err(anyhow!("Can't acquire semaphore - too many connections"))
+        tokio::select! {
+            res = self.recv_numbers() => {
+                Ok(res?)
+                //TODO: actions for gracefull shutdown received from this client
+            },
+            _ = shutdown => {
+                Ok(())
+            },
         }
     }
 
@@ -157,6 +155,12 @@ impl ClientHandler {
                 }
             }
         }
+    }
+}
+
+impl Drop for ClientHandler{
+    fn drop(&mut self) {
+        self.conn_limit.add_permits(1);
     }
 }
 
