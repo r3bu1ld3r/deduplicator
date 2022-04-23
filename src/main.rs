@@ -4,6 +4,13 @@ use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 fn main() -> Result<()> {
     let rt = Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async {

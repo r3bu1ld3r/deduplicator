@@ -3,6 +3,9 @@ name = "deduplicator"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+lto = true
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "dedup"
@@ -13,6 +16,9 @@ bench = false
 anyhow = "1.0.56"
 rand = "0.8.5"
 tokio = {version = "1.17.0", features=["full"]}
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.4.0"
 
 [[test]]
 name = "integration"
