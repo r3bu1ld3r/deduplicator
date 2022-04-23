@@ -3,8 +3,8 @@ use dedup::server::{DeDupServer, InputString};
 use rand::{distributions::Alphanumeric, Rng};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tokio::time::{sleep, Duration};
 use tokio::net::TcpStream;
+use tokio::time::{sleep, Duration};
 
 struct DedupClient {
     stream: TcpStream,
@@ -83,14 +83,14 @@ async fn garbage_test() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn clients_limit_test() {
     setup_srv().await;
-    for _ in 0..10{
+    for _ in 0..10 {
         let mut client = DedupClient::new().await;
-        tokio::spawn(async move{
+        tokio::spawn(async move {
             for n in 1..=10000000 {
                 client.send(InputString::ValidNumber(n)).await;
             }
             client.send(InputString::Termination).await;
         });
-    };
+    }
     sleep(Duration::from_secs(60)).await;
 }

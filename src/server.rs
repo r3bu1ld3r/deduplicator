@@ -4,7 +4,7 @@ use crate::storage::Storage;
 use anyhow::{anyhow, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, Mutex, Semaphore, SemaphorePermit},
+    sync::{broadcast, Mutex, Semaphore},
 };
 
 pub struct DeDupServer {
@@ -51,7 +51,7 @@ impl DeDupServer {
                         if let Err(e) = handler.run(subs.recv()).await {
                             println!("Error during clients data processing: {e}");
                         };
-                        
+
                     });
                 },
                 _ = shutdown.recv() => {
@@ -158,7 +158,7 @@ impl ClientHandler {
     }
 }
 
-impl Drop for ClientHandler{
+impl Drop for ClientHandler {
     fn drop(&mut self) {
         self.conn_limit.add_permits(1);
     }
