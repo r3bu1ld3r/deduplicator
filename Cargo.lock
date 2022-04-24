@@ -43,6 +43,7 @@ name = "deduplicator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "lockfree",
  "rand",
  "tikv-jemallocator",
  "tokio",
@@ -88,6 +89,15 @@ checksum = "327fa5b6a6940e4699ec49a9beae1ea4845c6bab9314e4f84ac68742139d8c53"
 dependencies = [
  "autocfg",
  "scopeguard",
+]
+
+[[package]]
+name = "lockfree"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74ee94b5ad113c7cb98c5a040f783d0952ee4fe100993881d1673c2cb002dd23"
+dependencies = [
+ "owned-alloc",
 ]
 
 [[package]]
@@ -152,6 +162,12 @@ name = "once_cell"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87f3e037eac156d1775da914196f0f37741a274155e34a0b7e427c35d2a2ecb9"
+
+[[package]]
+name = "owned-alloc"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30fceb411f9a12ff9222c5f824026be368ff15dc2f13468d850c7d3f502205d6"
 
 [[package]]
 name = "parking_lot"

@@ -10,7 +10,7 @@ use tokio::{
 pub struct DeDupServer {
     listener: TcpListener,
     conn_limit: Arc<Semaphore>,
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     termination_notify: broadcast::Sender<()>,
 }
 
@@ -19,7 +19,7 @@ const MAX_CONNECTIONS: usize = 5;
 impl DeDupServer {
     pub fn new(listener: TcpListener) -> Result<Self> {
         let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-        let storage = Arc::new(Mutex::new(Storage::new()?));
+        let storage = Arc::new(Storage::new()?);
         let (termination_notify, _) = broadcast::channel::<()>(1);
 
         Ok(Self {
@@ -55,8 +55,7 @@ impl DeDupServer {
                     });
                 },
                 _ = shutdown.recv() => {
-                    let mut storage = self.storage.lock().await;
-                    storage.shutdown().await;
+                    self.storage.shutdown().await;
                 },
             };
         }
@@ -66,7 +65,7 @@ impl DeDupServer {
 pub(crate) struct ClientHandler {
     stream: TcpStream,
     conn_limit: Arc<Semaphore>,
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<Storage>,
     terminate_tx: broadcast::Sender<()>,
 }
 
@@ -74,7 +73,7 @@ impl ClientHandler {
     pub(crate) fn new(
         stream: TcpStream,
         conn_limit: Arc<Semaphore>,
-        storage: Arc<Mutex<Storage>>,
+        storage: Arc<Storage>,
         terminate_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
@@ -102,8 +101,7 @@ impl ClientHandler {
             let line = self.read_socket().await?;
             match ClientHandler::parse_input(line)? {
                 InputString::ValidNumber(n) => {
-                    let mut storage = self.storage.lock().await;
-                    storage.append(n).await?;
+                    self.storage.append(n).await?;
                 }
                 InputString::Termination => {
                     println!(
@@ -165,11 +163,11 @@ impl Drop for ClientHandler {
 }
 
 pub(crate) struct StatsCollector {
-    storage_handler: Arc<Mutex<Storage>>,
+    storage_handler: Arc<Storage>,
 }
 
 impl StatsCollector {
-    pub(crate) fn new(storage: Arc<Mutex<Storage>>) -> Self {
+    pub(crate) fn new(storage: Arc<Storage>) -> Self {
         Self {
             storage_handler: storage,
         }
@@ -181,8 +179,7 @@ impl StatsCollector {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                let storage = handler_clone.lock().await;
-                storage.print_stats().await;
+                handler_clone.print_stats().await;
             }
         });
     }
