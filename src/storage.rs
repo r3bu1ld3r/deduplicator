@@ -1,12 +1,12 @@
 use anyhow::Result;
-use std::io::{Write, IoSlice};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-use std::thread::sleep;
-use std::time::Duration;
-use std::sync::atomic::AtomicUsize;
 use lockfree::{set::Set, stack::Stack};
 use log::debug;
+use std::io::{IoSlice, Write};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 
 const CACHE_SIZE: usize = 50000;
 #[derive(Debug)]
@@ -38,14 +38,21 @@ impl Stats {
     }
 
     pub(crate) fn inc_dups(&self) {
-        self.period_dups.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.period_dups
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     pub(crate) fn print(&self) -> (usize, usize, usize) {
-        let u = self.period_uniques.swap(0, std::sync::atomic::Ordering::SeqCst);
-        let d = self.period_dups.swap(0, std::sync::atomic::Ordering::SeqCst);
-        let prev_len = self.all_uniques.fetch_add(u, std::sync::atomic::Ordering::AcqRel);
-        (u, d, prev_len+u)
+        let u = self
+            .period_uniques
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        let d = self
+            .period_dups
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        let prev_len = self
+            .all_uniques
+            .fetch_add(u, std::sync::atomic::Ordering::AcqRel);
+        (u, d, prev_len + u)
     }
 }
 
@@ -70,7 +77,7 @@ impl Storage {
             let mut std_file = std::fs::File::create("./numbers.log").unwrap();
             let mut big_buf = Vec::<u8>::with_capacity(CACHE_SIZE * 10 + 20);
 
-            while !shutdown.load(SeqCst){
+            while !shutdown.load(SeqCst) {
                 sleep(Duration::from_millis(50));
                 let mut it = ne.pop_iter();
                 for _ in 0..CACHE_SIZE {
@@ -78,26 +85,25 @@ impl Storage {
                         let line = format!("{:0>9}\n", num.to_string());
                         big_buf.extend_from_slice(line.as_bytes());
                     };
-                };
-                if let Err(e) = std_file.write_vectored(&[IoSlice::new(&big_buf)]){
+                }
+                if let Err(e) = std_file.write_vectored(&[IoSlice::new(&big_buf)]) {
                     debug!("Error during vectored write: {e}");
                 };
                 big_buf.clear();
-            };
+            }
 
-            while let Some(num) = cache.pop(){
+            while let Some(num) = cache.pop() {
                 let line = format!("{:0>9}\n", num.to_string());
                 big_buf.extend_from_slice(line.as_bytes());
-            };
-            if let Err(e) = std_file.write_vectored(&[IoSlice::new(&big_buf)]){
-                    debug!("Error during vectored write: {e}, try again");
-                    let _ = std_file.write_vectored(&[IoSlice::new(&big_buf)]);
+            }
+            if let Err(e) = std_file.write_vectored(&[IoSlice::new(&big_buf)]) {
+                debug!("Error during vectored write: {e}, try again");
+                let _ = std_file.write_vectored(&[IoSlice::new(&big_buf)]);
             };
         });
     }
-    
 
-    pub async fn append(&self, number: u32){
+    pub async fn append(&self, number: u32) {
         self.inner_append(number);
     }
 

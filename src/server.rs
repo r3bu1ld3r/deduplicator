@@ -1,11 +1,18 @@
-use std::{sync::{Arc, atomic::{AtomicBool, Ordering::SeqCst}},time::Duration};
 use crate::storage::Storage;
 use anyhow::{anyhow, Result};
+use log::debug;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering::SeqCst},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, Semaphore}, time::sleep,
+    sync::{broadcast, Semaphore},
+    time::sleep,
 };
-use log::debug;
 
 pub struct DeDupServer {
     listener: TcpListener,
@@ -29,12 +36,13 @@ impl DeDupServer {
             conn_limit,
             storage,
             termination_notify,
-            writer_shutdown
+            writer_shutdown,
         })
     }
 
     pub async fn run(&self) -> Result<()> {
-        let mut stats_collector = StatsCollector::new(Arc::clone(&self.storage), Arc::clone(&self.writer_shutdown));
+        let mut stats_collector =
+            StatsCollector::new(Arc::clone(&self.storage), Arc::clone(&self.writer_shutdown));
         stats_collector.run().await;
         let mut shutdown = self.termination_notify.subscribe();
         loop {
@@ -118,11 +126,14 @@ impl ClientHandler {
         match ClientHandler::parse_input(line)? {
             InputString::ValidNumber(n) => {
                 self.storage.append(n).await;
-            },
+            }
             InputString::Termination | InputString::Garbage => {
-                debug!("[+] active receivers: {}", self.terminate_tx.receiver_count());
+                debug!(
+                    "[+] active receivers: {}",
+                    self.terminate_tx.receiver_count()
+                );
                 self.terminate_tx.send(())?;
-                return Ok(false)
+                return Ok(false);
             }
         };
         Ok(true)
@@ -180,7 +191,7 @@ impl StatsCollector {
     pub(crate) fn new(storage: Arc<Storage>, terminate: Arc<AtomicBool>) -> Self {
         Self {
             storage_handler: storage,
-            terminate
+            terminate,
         }
     }
 
@@ -191,10 +202,10 @@ impl StatsCollector {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                if !terminate_clone.load(SeqCst){
+                if !terminate_clone.load(SeqCst) {
                     handler_clone.print_stats().await;
                 } else {
-                    return
+                    return;
                 }
             }
         });

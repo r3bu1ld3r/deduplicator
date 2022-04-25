@@ -84,8 +84,8 @@ async fn clients_limit_test() {
     for i in 3..=6 {
         let mut client = DedupClient::new().await;
         tokio::spawn(async move {
-            let start = i*10u32.pow(7);
-            for n in start..=start+1*20u32.pow(7){
+            let start = i * 10u32.pow(7);
+            for n in start..=start + 1 * 20u32.pow(7) {
                 client.send(InputString::ValidNumber(n)).await;
             }
             client.send(InputString::Termination).await;
