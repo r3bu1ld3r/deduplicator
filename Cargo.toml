@@ -15,6 +15,7 @@ bench = false
 [dependencies]
 anyhow = "1.0.56"
 lockfree = "0.5.1"
+log = "0.4.16"
 rand = "0.8.5"
 tokio = {version = "1.17.0", features=["full"]}
 

@@ -48,7 +48,7 @@ async fn setup_srv() {
     sleep(Duration::from_millis(300)).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn simple_valid_input_test() {
     setup_srv().await;
     let mut client = DedupClient::new().await;
@@ -56,7 +56,6 @@ async fn simple_valid_input_test() {
         client.send(InputString::ValidNumber(n)).await;
     }
     client.send(InputString::Termination).await;
-    sleep(Duration::from_secs(1)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -65,7 +64,6 @@ async fn termination_test() {
     let mut client = DedupClient::new().await;
     client.send(InputString::ValidNumber(18)).await;
     client.send(InputString::ValidNumber(8)).await;
-    sleep(Duration::from_millis(300)).await;
     client.send(InputString::Termination).await;
     client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
@@ -80,13 +78,14 @@ async fn garbage_test() {
     client.send(InputString::ValidNumber(28)).await; //TODO assert error here
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn clients_limit_test() {
     setup_srv().await;
-    for _ in 0..10 {
+    for i in 3..=6 {
         let mut client = DedupClient::new().await;
         tokio::spawn(async move {
-            for n in 1..=10000000 {
+            let start = i*10u32.pow(7);
+            for n in start..=start+1*20u32.pow(7){
                 client.send(InputString::ValidNumber(n)).await;
             }
             client.send(InputString::Termination).await;

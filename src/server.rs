@@ -1,17 +1,18 @@
-use std::{future::Future, sync::Arc, time::Duration};
-
+use std::{sync::{Arc, atomic::{AtomicBool, Ordering::SeqCst}},time::Duration};
 use crate::storage::Storage;
 use anyhow::{anyhow, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{broadcast, Mutex, Semaphore},
+    sync::{broadcast, Semaphore}, time::sleep,
 };
+use log::debug;
 
 pub struct DeDupServer {
     listener: TcpListener,
     conn_limit: Arc<Semaphore>,
     storage: Arc<Storage>,
     termination_notify: broadcast::Sender<()>,
+    writer_shutdown: Arc<AtomicBool>,
 }
 
 const MAX_CONNECTIONS: usize = 5;
@@ -19,7 +20,8 @@ const MAX_CONNECTIONS: usize = 5;
 impl DeDupServer {
     pub fn new(listener: TcpListener) -> Result<Self> {
         let conn_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-        let storage = Arc::new(Storage::new()?);
+        let writer_shutdown = Arc::new(AtomicBool::new(false));
+        let storage = Arc::new(Storage::new(Arc::clone(&writer_shutdown))?);
         let (termination_notify, _) = broadcast::channel::<()>(1);
 
         Ok(Self {
@@ -27,19 +29,19 @@ impl DeDupServer {
             conn_limit,
             storage,
             termination_notify,
+            writer_shutdown
         })
     }
 
     pub async fn run(&self) -> Result<()> {
-        let mut stats_collector = StatsCollector::new(Arc::clone(&self.storage));
+        let mut stats_collector = StatsCollector::new(Arc::clone(&self.storage), Arc::clone(&self.writer_shutdown));
         stats_collector.run().await;
         let mut shutdown = self.termination_notify.subscribe();
         loop {
-            self.conn_limit.acquire().await.unwrap().forget();
             tokio::select! {
                 res = self.listener.accept() => {
+                    self.conn_limit.acquire().await?.forget();
                     let (stream, _) = res?;
-                    let mut subs = self.termination_notify.subscribe();
                     let handler = ClientHandler::new(
                         stream,
                         Arc::clone(&self.conn_limit),
@@ -48,14 +50,20 @@ impl DeDupServer {
                     );
 
                     tokio::spawn(async move {
-                        if let Err(e) = handler.run(subs.recv()).await {
-                            println!("Error during clients data processing: {e}");
+                        if let Err(e) = handler.run().await {
+                            debug!("Error during clients data processing: {e}");
                         };
 
                     });
                 },
                 _ = shutdown.recv() => {
-                    self.storage.shutdown().await;
+                    while self.conn_limit.available_permits() != MAX_CONNECTIONS {
+                        debug!("available permits: {}", self.conn_limit.available_permits());
+                        sleep(Duration::from_millis(50)).await;
+                    };
+                    debug!("[+] all client connections closed");
+                    self.writer_shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Ok(())
                 },
             };
         }
@@ -84,39 +92,40 @@ impl ClientHandler {
         }
     }
 
-    pub(crate) async fn run(&self, shutdown: impl Future) -> Result<()> {
-        tokio::select! {
-            res = self.recv_numbers() => {
-                Ok(res?)
-                //TODO: actions for gracefull shutdown received from this client
-            },
-            _ = shutdown => {
-                Ok(())
-            },
+    pub(crate) async fn run(&self) -> Result<()> {
+        loop {
+            let mut shutdown = self.terminate_tx.subscribe();
+            tokio::select! {
+                res = self.recv_numbers() => {
+                    if res? {
+                        continue
+                    } else {
+                        debug!("[+] termination received from CURRENT client ");
+                        return Ok(())
+                    }
+                    //TODO: actions for gracefull shutdown received from this client
+                },
+                _ = shutdown.recv() => {
+                    debug!("[+] shutdown signal receieved from ANOTHER client");
+                    return Ok(())
+                },
+            }
         }
     }
 
-    async fn recv_numbers(&self) -> Result<()> {
-        loop {
-            let line = self.read_socket().await?;
-            match ClientHandler::parse_input(line)? {
-                InputString::ValidNumber(n) => {
-                    self.storage.append(n).await?;
-                }
-                InputString::Termination => {
-                    println!(
-                        "[+] Termination msg received by: {}",
-                        self.terminate_tx.send(())?
-                    );
-                    break Ok(());
-                }
-                InputString::Garbage => {
-                    break Err(anyhow!(
-                        "client send data that does not conform to a valid line"
-                    ))
-                }
+    async fn recv_numbers(&self) -> Result<bool> {
+        let line = self.read_socket().await?;
+        match ClientHandler::parse_input(line)? {
+            InputString::ValidNumber(n) => {
+                self.storage.append(n).await;
+            },
+            InputString::Termination | InputString::Garbage => {
+                debug!("[+] active receivers: {}", self.terminate_tx.receiver_count());
+                self.terminate_tx.send(())?;
+                return Ok(false)
             }
-        }
+        };
+        Ok(true)
     }
 
     async fn read_socket(&self) -> Result<[u8; 10]> {
@@ -135,7 +144,7 @@ impl ClientHandler {
 
     fn parse_input(input: [u8; 10]) -> Result<InputString> {
         if input[9] != 0xA {
-            println!("Garbage - without endline symbol");
+            debug!("Garbage - without endline symbol");
             Ok(InputString::Garbage)
         } else {
             match std::str::from_utf8(&input[0..9]) {
@@ -144,11 +153,11 @@ impl ClientHandler {
                     Ok(InputString::ValidNumber(s.parse::<u32>()?))
                 }
                 Ok(s) => {
-                    println!("garbage string: {s}");
+                    debug!("garbage string: {s}");
                     Ok(InputString::Garbage)
                 }
                 Err(e) => {
-                    println!("Error during parsing from_utf8: {e}");
+                    debug!("Error during parsing from_utf8: {e}");
                     Ok(InputString::Garbage)
                 }
             }
@@ -164,22 +173,29 @@ impl Drop for ClientHandler {
 
 pub(crate) struct StatsCollector {
     storage_handler: Arc<Storage>,
+    terminate: Arc<AtomicBool>,
 }
 
 impl StatsCollector {
-    pub(crate) fn new(storage: Arc<Storage>) -> Self {
+    pub(crate) fn new(storage: Arc<Storage>, terminate: Arc<AtomicBool>) -> Self {
         Self {
             storage_handler: storage,
+            terminate
         }
     }
 
     pub(crate) async fn run(&mut self) {
         let handler_clone = Arc::clone(&self.storage_handler);
+        let terminate_clone = Arc::clone(&self.terminate);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                handler_clone.print_stats().await;
+                if !terminate_clone.load(SeqCst){
+                    handler_clone.print_stats().await;
+                } else {
+                    return
+                }
             }
         });
     }
