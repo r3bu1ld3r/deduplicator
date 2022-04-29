@@ -47,7 +47,7 @@ impl DeDupServer {
         let mut shutdown = self.termination_notify.subscribe();
         loop {
             tokio::select! {
-                res = self.listener.accept() => {
+                res = self.listener.accept(), if self.conn_limit.available_permits() > 0 => {
                     self.conn_limit.acquire().await?.forget();
                     let (stream, _) = res?;
                     let handler = ClientHandler::new(
