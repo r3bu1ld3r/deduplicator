@@ -20,6 +20,7 @@ pub struct DeDupServer {
     storage: Arc<Storage>,
     termination_notify: broadcast::Sender<()>,
     writer_shutdown: Arc<AtomicBool>,
+    stats_collector: StatsCollector,
 }
 
 const MAX_CONNECTIONS: usize = 5;
@@ -30,6 +31,8 @@ impl DeDupServer {
         let writer_shutdown = Arc::new(AtomicBool::new(false));
         let storage = Arc::new(Storage::new(Arc::clone(&writer_shutdown))?);
         let (termination_notify, _) = broadcast::channel::<()>(1);
+        let stats_collector =
+            StatsCollector::new(Arc::clone(&storage), Arc::clone(&writer_shutdown));
 
         Ok(Self {
             listener,
@@ -37,13 +40,12 @@ impl DeDupServer {
             storage,
             termination_notify,
             writer_shutdown,
+            stats_collector,
         })
     }
 
     pub async fn run(&self) -> Result<()> {
-        let mut stats_collector =
-            StatsCollector::new(Arc::clone(&self.storage), Arc::clone(&self.writer_shutdown));
-        stats_collector.run().await;
+        self.stats_collector.run();
         let mut shutdown = self.termination_notify.subscribe();
         loop {
             tokio::select! {
@@ -104,12 +106,18 @@ impl ClientHandler {
         loop {
             let mut shutdown = self.terminate_tx.subscribe();
             tokio::select! {
-                res = self.recv_numbers() => {
-                    if res? {
-                        continue
-                    } else {
-                        debug!("[+] termination received from CURRENT client ");
-                        return Ok(())
+                res = self.stream.readable() => {
+                    res?;
+                    match self.recv_numbers().await {
+                        Ok(r) if r == true => continue,
+                        Ok(_) => {
+                            debug!("[+] termination received from CURRENT client");
+                            return Ok(())
+                        },
+                        Err(e) => {
+                            debug!("error during recv_number: {e}");
+                            return Ok(())
+                        },
                     }
                     //TODO: actions for gracefull shutdown received from this client
                 },
@@ -141,16 +149,22 @@ impl ClientHandler {
 
     async fn read_socket(&self) -> Result<[u8; 10]> {
         let mut input_buf = [0; 10];
-        loop {
-            self.stream.readable().await?;
-            match self.stream.try_read(&mut input_buf) {
-                Ok(n) if n == 0 => return Err(anyhow!("stream closed by client")), //stream closed by client
-                Ok(_) => break, //TODO: maybe add case when have to read again if read less than bufsize
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(anyhow!("{e}")),
-            }
+        self.stream.readable().await?;
+        match self.stream.try_read(&mut input_buf) {
+            Ok(n) if n == 0 => Err(anyhow!("stream closed by client")), //stream closed by client
+            Ok(_) => Ok(input_buf), //TODO: maybe add case when have to read again if read less than bufsize
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                //false positive readiness - sleep and retry
+                sleep(Duration::from_millis(10)).await;
+                if let Err(e) = self.stream.try_read(&mut input_buf) {
+                    Err(anyhow!("{e}"))
+                } else {
+                    Ok(input_buf)
+                }
+            },
+            Err(e) => Err(anyhow!("{e}")),
         }
-        Ok(input_buf)
+        
     }
 
     fn parse_input(input: [u8; 10]) -> Result<InputString> {
@@ -195,7 +209,7 @@ impl StatsCollector {
         }
     }
 
-    pub(crate) async fn run(&mut self) {
+    pub(crate) fn run(&self) {
         let handler_clone = Arc::clone(&self.storage_handler);
         let terminate_clone = Arc::clone(&self.terminate);
         tokio::spawn(async move {
